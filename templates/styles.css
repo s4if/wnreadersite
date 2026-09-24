@@ -11,10 +11,31 @@
   --color-code: #f3efe8;
   --color-focus: #1769aa;
   --shadow-card: 0 0.25rem 1.5rem rgb(55 43 30 / 8%);
-  --font-interface: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-reading: Georgia, "Times New Roman", serif;
+  --font-interface: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-reading: "Source Sans 3", "Inter", system-ui, sans-serif;
   --radius: 0.75rem;
   --content-width: 48rem;
+
+  /* Pico CSS: map framework tokens to the site palette and fonts */
+  --pico-font-family: var(--font-interface);
+  --pico-primary: var(--color-accent);
+  --pico-primary-hover: var(--color-accent);
+  --pico-primary-focus: var(--color-focus);
+  --pico-background-color: var(--color-page);
+  --pico-color: var(--color-text);
+  --pico-h1-color: var(--color-text);
+  --pico-h2-color: var(--color-text);
+  --pico-h3-color: var(--color-text);
+  --pico-h4-color: var(--color-text);
+  --pico-h5-color: var(--color-text);
+  --pico-h6-color: var(--color-text);
+  --pico-muted-color: var(--color-muted);
+  --pico-muted-border-color: var(--color-border);
+  --pico-border-color: var(--color-border);
+  --pico-border-radius: var(--radius);
+  --pico-card-background-color: var(--color-surface);
+  --pico-card-border-color: var(--color-border);
+  --pico-card-shadow: var(--shadow-card);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,13 +53,7 @@
   }
 }
 
-/* Foundations */
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
+/* Foundations (box-sizing and body margins come from Pico) */
 html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
@@ -46,7 +61,6 @@ html {
 
 body {
   min-height: 100vh;
-  margin: 0;
   background: var(--color-page);
   color: var(--color-text);
   font-family: var(--font-interface);
@@ -91,7 +105,12 @@ a:hover {
 }
 
 /* Shared layout */
+/* Undo Pico's semantic container on body > header; the inner element owns layout. */
 .site-header {
+  width: auto;
+  max-width: none;
+  margin: 0;
+  padding: 0;
   border-block-end: 1px solid var(--color-border);
   background: var(--color-surface);
   background: color-mix(in srgb, var(--color-surface) 94%, transparent);
@@ -141,6 +160,7 @@ a:hover {
 .shell {
   width: min(100% - 3rem, var(--content-width));
   margin: clamp(1.5rem, 4vw, 3rem) auto;
+  padding: 0;
 }
 
 .card {

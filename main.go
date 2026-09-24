@@ -509,14 +509,15 @@ func (s *server) routes() *http.ServeMux {
 }
 
 // securityHeaders sets response hardening headers on every response.
-// CSP allows same-origin styles and chapter images but no scripts — the chapter
-// files are trusted, and this is defense in depth if one is ever swapped.
+// CSP allows same-origin and CDN styles, CDN fonts, and chapter images but no
+// scripts — the chapter files are trusted, and this is defense in depth if one
+// is ever swapped.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src * data:")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src * data:")
 		next.ServeHTTP(w, r)
 	})
 }
