@@ -79,10 +79,10 @@ type viewData struct {
 	Projects    []*project // home only
 }
 
-// webAssets are compiled into the executable at build time. The chapter text
-// remains external and is read from the projects' pages folders at runtime.
+// webAssets are compiled into the executable at build time, including the
+// vendored Pico CSS v2.1.1 stylesheet. Chapter text remains external.
 //
-//go:embed templates/*.html templates/*.css
+//go:embed templates/*.html templates/*.css templates/pico.LICENSE.md
 var webAssets embed.FS
 
 var tmplFuncs = template.FuncMap{"esc": url.PathEscape}
@@ -340,7 +340,15 @@ func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []st
 }
 
 func handleStyles(w http.ResponseWriter, _ *http.Request) {
-	css, err := webAssets.ReadFile("templates/styles.css")
+	serveEmbeddedCSS(w, "templates/styles.css")
+}
+
+func handlePicoStyles(w http.ResponseWriter, _ *http.Request) {
+	serveEmbeddedCSS(w, "templates/pico.classless.min.css")
+}
+
+func serveEmbeddedCSS(w http.ResponseWriter, name string) {
+	css, err := webAssets.ReadFile(name)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -501,6 +509,7 @@ func safeSegment(s string) bool {
 func (s *server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /styles.css", handleStyles)
+	mux.HandleFunc("GET /pico.classless.min.css", handlePicoStyles)
 	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /{project}", s.handleProjectRedirect)
 	mux.HandleFunc("GET /{project}/{$}", s.handleProjectIndex)
@@ -509,15 +518,14 @@ func (s *server) routes() *http.ServeMux {
 }
 
 // securityHeaders sets response hardening headers on every response.
-// CSP allows same-origin and CDN styles, CDN fonts, and chapter images but no
-// scripts — the chapter files are trusted, and this is defense in depth if one
-// is ever swapped.
+// CSP allows only same-origin styles and chapter images but no scripts —
+// chapter files are trusted, and this is defense in depth if one is ever swapped.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src * data:")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src * data:")
 		next.ServeHTTP(w, r)
 	})
 }

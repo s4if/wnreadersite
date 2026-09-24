@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -347,6 +348,38 @@ func TestHandleStyles(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "@media (max-width: 40rem)") {
 		t.Error("embedded stylesheet does not contain the responsive rules")
+	}
+}
+
+func TestEmbeddedPicoStyles(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "One\n"})
+	s := buildServer(t, root)
+
+	home := do(s, "/").Body.String()
+	if !strings.Contains(home, `href="/pico.classless.min.css"`) || strings.Contains(home, "cdn.jsdelivr.net") {
+		t.Errorf("home does not use the local Pico stylesheet: %s", home)
+	}
+
+	response := do(s, "/pico.classless.min.css")
+	if response.Code != 200 {
+		t.Fatalf("Pico CSS status = %d, want 200", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/css; charset=utf-8" {
+		t.Errorf("Pico CSS Content-Type = %q", got)
+	}
+	css, err := webAssets.ReadFile("templates/pico.classless.min.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response.Body.Bytes(), css) {
+		t.Error("Pico route does not serve the embedded stylesheet")
+	}
+
+	secured := httptest.NewRecorder()
+	securityHeaders(s.routes()).ServeHTTP(secured, httptest.NewRequest("GET", "/", nil))
+	if got := secured.Header().Get("Content-Security-Policy"); strings.Contains(got, "cdn.jsdelivr.net") || strings.Contains(got, "fonts.googleapis.com") {
+		t.Errorf("CSP still allows third-party styles: %q", got)
 	}
 }
 
