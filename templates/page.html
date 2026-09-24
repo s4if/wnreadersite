@@ -1,0 +1,41 @@
+{{define "pager"}}
+<nav class="pager" aria-label="Chapter navigation">
+  {{if .Prev}}
+  <a class="pager__item pager__item--previous" href="/{{esc .ProjectSlug}}/{{esc .Prev.Folder}}/{{esc .Prev.Name}}" rel="prev">
+    <span class="pager__label">← Previous</span>
+    <span class="pager__title">{{.Prev.Title}}</span>
+  </a>
+  {{else}}
+  <span class="pager__item pager__item--previous pager__item--disabled" aria-hidden="true">
+    <span class="pager__label">← Previous</span>
+  </span>
+  {{end}}
+
+  <a class="pager__index" href="/{{esc .ProjectSlug}}/">All chapters</a>
+
+  {{if .Next}}
+  <a class="pager__item pager__item--next" href="/{{esc .ProjectSlug}}/{{esc .Next.Folder}}/{{esc .Next.Name}}" rel="next">
+    <span class="pager__label">Next →</span>
+    <span class="pager__title">{{.Next.Title}}</span>
+  </a>
+  {{else}}
+  <span class="pager__item pager__item--next pager__item--disabled" aria-hidden="true">
+    <span class="pager__label">Next →</span>
+  </span>
+  {{end}}
+</nav>
+{{end}}
+
+{{define "content"}}
+{{template "pager" .}}
+
+<article class="card reading-card" aria-labelledby="page-title">
+  <header class="card__header">
+    <p class="eyebrow">Chapter</p>
+    <h1 id="page-title">{{.H1}}</h1>
+  </header>
+  <div class="content">{{.Body}}</div>
+</article>
+
+{{template "pager" .}}
+{{end}}

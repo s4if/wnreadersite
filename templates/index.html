@@ -1,0 +1,30 @@
+{{define "content"}}
+<article class="card" aria-labelledby="index-title">
+  <header class="card__header">
+    <p class="eyebrow">Series</p>
+    <h1 id="index-title">{{.Title}}</h1>
+    {{if .Author}}<p class="series-byline">by {{.Author}}</p>{{end}}
+    {{if .Description}}<p class="series-description">{{.Description}}</p>{{end}}
+  </header>
+
+  {{if .Chapters}}
+  <div class="chapter-list">
+    {{range .Chapters}}{{$folder := .Folder}}
+    <section class="chapter-group">
+      <h2>
+        {{$folder}}
+        <span class="chapter-group__count">— Pages: {{len .Pages}}</span>
+      </h2>
+      <ul class="page-list">
+        {{range .Pages}}
+        <li><a href="/{{esc $.ProjectSlug}}/{{esc $folder}}/{{esc .Name}}">{{.Title}}</a></li>
+        {{end}}
+      </ul>
+    </section>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty-state">No chapters are available yet.</p>
+  {{end}}
+</article>
+{{end}}

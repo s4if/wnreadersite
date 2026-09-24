@@ -1,0 +1,40 @@
+# wnreader series configuration.
+#
+# Copy this file next to the wnreader executable as wnreader.toml and
+# uncomment the lines you need. Everything here is optional: missing keys
+# (or a missing file entirely) simply fall back to the defaults noted
+# below.
+#
+# Precedence: command-line flags beat this file, this file beats the
+# defaults. A file with TOML syntax errors is logged and ignored — it can
+# never prevent the app from starting.
+
+# Full series title, shown in the site header, on the chapter index, and
+# in page titles. Flag equivalent: -title.
+# Default: the name of the folder the app is in.
+#
+#series = "Tokyo Dungeon Academy"
+
+# Series author, shown on the chapter index under the title.
+# Default: -
+#
+#author = "Some Author"
+
+# Short blurb, shown on the chapter index under the author. For multiline
+# text use a literal string quoted with three single quotes (''') — no
+# escaping needed, so "quotes" and \backslashes\ pass straight through.
+# The line break directly after the opening ''' is ignored. Uncomment the
+# whole block, including both ''' lines.
+# Default: -
+#
+#description = '''
+#First line of the blurb; a blank line starts a new paragraph.
+#
+#A second paragraph.
+#'''
+
+# Extension of the translated chapter files, dot optional.
+# Flag equivalent: -ext.
+# Default: .txt
+#
+#ext = ".md"

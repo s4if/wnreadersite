@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f2ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#191814" media="(prefers-color-scheme: dark)">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header">
+    <div class="site-header__inner">
+      {{if .ProjectSlug}}<a class="site-header__back" href="/">← All series</a>{{end}}
+      <a class="site-header__brand" href="/">{{.SiteTitle}}</a>
+      <span class="site-header__context">English translation</span>
+    </div>
+  </header>
+  <main class="shell" id="main-content">
+    {{template "content" .}}
+  </main>
+</body>
+</html>

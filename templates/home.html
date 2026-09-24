@@ -1,0 +1,23 @@
+{{define "content"}}
+<article class="card" aria-labelledby="home-title">
+  <header class="card__header">
+    <p class="eyebrow">Library</p>
+    <h1 id="home-title">{{.SiteTitle}}</h1>
+  </header>
+
+  {{if .Projects}}
+  <ul class="project-list">
+    {{range .Projects}}
+    <li class="project-item">
+      <a class="project-item__title" href="/{{esc .Slug}}/">{{.Title}}</a>
+      <p class="series-byline">by {{.Author}}</p>
+      {{if .Blurb}}<p class="series-description">{{.Blurb}}</p>{{end}}
+      <p class="project-item__meta">{{len .Pages}} pages</p>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="empty-state">No projects found.</p>
+  {{end}}
+</article>
+{{end}}
