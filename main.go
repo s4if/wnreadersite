@@ -82,7 +82,7 @@ type viewData struct {
 // webAssets are compiled into the executable at build time, including the
 // vendored Pico CSS v2.1.1 stylesheet. Chapter text remains external.
 //
-//go:embed templates/*.html templates/*.css templates/pico.LICENSE.md
+//go:embed templates/*.html templates/*.css templates/*.js templates/pico.LICENSE.md
 var webAssets embed.FS
 
 var tmplFuncs = template.FuncMap{"esc": url.PathEscape}
@@ -224,16 +224,58 @@ func fileTitle(path string) string {
 	return ""
 }
 
+// naturalLess reports whether a sorts before b in human order: runs of
+// digits compare by numeric value (so "ch21" comes before "ch101") while
+// everything else compares bytewise. Equal numeric runs fall back to a plain
+// string comparison, keeping the order deterministic when names differ only
+// in leading zeros ("01" vs "1").
+func naturalLess(a, b string) bool {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if isASCIIDigit(a[i]) && isASCIIDigit(b[j]) {
+			startA, startB := i, j
+			for i < len(a) && isASCIIDigit(a[i]) {
+				i++
+			}
+			for j < len(b) && isASCIIDigit(b[j]) {
+				j++
+			}
+			numA := strings.TrimLeft(a[startA:i], "0")
+			numB := strings.TrimLeft(b[startB:j], "0")
+			if len(numA) != len(numB) {
+				return len(numA) < len(numB)
+			}
+			if numA != numB {
+				return numA < numB
+			}
+			continue
+		}
+		if a[i] != b[j] {
+			return a[i] < b[j]
+		}
+		i++
+		j++
+	}
+	if i < len(a) || j < len(b) {
+		return i == len(a)
+	}
+	return a < b
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
 // scanPages returns every (folder, name, title) tuple for files with the
-// given extension under baseDir, sorted. Titles come from the first
-// non-empty line in the first five lines and fall back to the filename.
+// given extension under baseDir, sorted in natural (numeric-aware) order so
+// chapter folders like ch21-ch40 come before ch101-ch120. Titles come from
+// the first non-empty line in the first five lines and fall back to the
+// filename.
 func scanPages(baseDir, fileExt string) []pageRef {
 	var pages []pageRef
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
 		return pages
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	sort.Slice(entries, func(i, j int) bool { return naturalLess(entries[i].Name(), entries[j].Name()) })
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -248,7 +290,7 @@ func scanPages(baseDir, fileExt string) []pageRef {
 				names = append(names, strings.TrimSuffix(f.Name(), fileExt))
 			}
 		}
-		sort.Strings(names)
+		sort.Slice(names, func(i, j int) bool { return naturalLess(names[i], names[j]) })
 		for _, n := range names {
 			title := fileTitle(filepath.Join(baseDir, e.Name(), n+fileExt))
 			if title == "" {
@@ -335,7 +377,7 @@ func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []st
 		}
 		order = append(order, slug)
 	}
-	sort.Strings(order)
+	sort.Slice(order, func(i, j int) bool { return naturalLess(order[i], order[j]) })
 	return projects, order, nil
 }
 
@@ -356,6 +398,17 @@ func serveEmbeddedCSS(w http.ResponseWriter, name string) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(css)
+}
+
+func handleScript(w http.ResponseWriter, _ *http.Request) {
+	js, err := webAssets.ReadFile("templates/reader.js")
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(js)
 }
 
 func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
@@ -510,6 +563,7 @@ func (s *server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /styles.css", handleStyles)
 	mux.HandleFunc("GET /pico.classless.min.css", handlePicoStyles)
+	mux.HandleFunc("GET /reader.js", handleScript)
 	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /{project}", s.handleProjectRedirect)
 	mux.HandleFunc("GET /{project}/{$}", s.handleProjectIndex)
@@ -518,14 +572,14 @@ func (s *server) routes() *http.ServeMux {
 }
 
 // securityHeaders sets response hardening headers on every response.
-// CSP allows only same-origin styles and chapter images but no scripts —
+// CSP allows only same-origin styles, the reader script, and chapter images —
 // chapter files are trusted, and this is defense in depth if one is ever swapped.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src * data:")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; img-src * data:")
 		next.ServeHTTP(w, r)
 	})
 }

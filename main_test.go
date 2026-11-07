@@ -126,6 +126,22 @@ func TestScanProjectsDiscovery(t *testing.T) {
 	}
 }
 
+func TestScanProjectsSortsNaturally(t *testing.T) {
+	root := t.TempDir()
+	for _, slug := range []string{"ch101-ch120", "ch1-ch20", "ch21-ch40"} {
+		writeProject(t, root, slug, map[string]string{"c/1.txt": "x\n"})
+	}
+
+	_, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ch1-ch20", "ch21-ch40", "ch101-ch120"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+}
+
 func TestScanProjectsExtPrecedence(t *testing.T) {
 	root := t.TempDir()
 	// plain uses only .txt files; marked declares ext "md" in its toml.
@@ -381,6 +397,21 @@ func TestEmbeddedPicoStyles(t *testing.T) {
 	if got := secured.Header().Get("Content-Security-Policy"); strings.Contains(got, "cdn.jsdelivr.net") || strings.Contains(got, "fonts.googleapis.com") {
 		t.Errorf("CSP still allows third-party styles: %q", got)
 	}
+
+	script := do(s, "/reader.js")
+	if script.Code != 200 {
+		t.Fatalf("reader.js status = %d, want 200", script.Code)
+	}
+	if got := script.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Errorf("reader.js Content-Type = %q", got)
+	}
+	js, err := webAssets.ReadFile("templates/reader.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(script.Body.Bytes(), js) {
+		t.Error("reader.js route does not serve the embedded script")
+	}
 }
 
 func TestScanPagesUsesFirstNonEmptyLineAsTitle(t *testing.T) {
@@ -410,5 +441,37 @@ func TestScanPagesUsesFirstNonEmptyLineAsTitle(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scanPages() = %#v, want %#v", got, want)
+	}
+}
+
+func TestScanPagesSortsNaturally(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "series", map[string]string{
+		"ch1-ch20/1.txt":    "one\n",
+		"ch1-ch20/2.txt":    "two\n",
+		"ch1-ch20/10.txt":   "ten\n",
+		"ch21-ch40/1.txt":   "twenty one\n",
+		"ch101-ch120/1.txt": "hundred one\n",
+	})
+
+	got := scanPages(filepath.Join(root, "series", "en"), ".txt")
+	var folders []string
+	var names []string
+	for _, p := range got {
+		if len(folders) == 0 || folders[len(folders)-1] != p.Folder {
+			folders = append(folders, p.Folder)
+		}
+		if p.Folder == "ch1-ch20" {
+			names = append(names, p.Name)
+		}
+	}
+
+	wantFolders := []string{"ch1-ch20", "ch21-ch40", "ch101-ch120"}
+	if !reflect.DeepEqual(folders, wantFolders) {
+		t.Errorf("folder order = %v, want %v", folders, wantFolders)
+	}
+	wantNames := []string{"1", "2", "10"}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Errorf("page order = %v, want %v", names, wantNames)
 	}
 }
