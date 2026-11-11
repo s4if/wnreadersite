@@ -5,14 +5,15 @@
 //	routes:  /                           project list (the library home)
 //	         /{project}/                  chapter index of one series
 //	         /{project}/{folder}/{name}   rendered page ({project}/{dir}/{folder}/{name}{ext})
-//	config:  {project}/wnreader.toml      per-series settings file and serve
+//	config:  {root}/{project}/wnreader.toml  per-series settings file and serve
 //	                                      marker: a project is only served
 //	                                      while this file exists (rename it
 //	                                      away to take a series offline);
 //	                                      missing keys keep their defaults
-//	run:     ./wnreadersite [-title "…"] [-port 5500] [-addr 0.0.0.0] [-dir en] [-ext .txt]
+//	run:     ./wnreadersite [-title "…"] [-port 5500] [-addr 0.0.0.0] [-dir en] [-ext .txt] [-rootdir /path]
 //
-// The library root is the folder containing the executable. Every direct
+// The library root is the directory holding the project folders, set with
+// -rootdir (default: the folder containing the executable). Every direct
 // subdirectory of it that contains a pages folder (default "en") and a
 // wnreader.toml is served as a project. The whole library is scanned once at startup, so restart
 // the app to pick up added or changed projects, pages, or config files.
@@ -137,7 +138,7 @@ func escapeBoardQuotes(src []byte) []byte {
 
 // server holds the library state scanned once at startup.
 type server struct {
-	rootDir   string // absolute path of the library root (the executable's folder)
+	rootDir   string // absolute path of the library root (-rootdir, else the executable's folder)
 	siteTitle string // library title shown on the home page
 	projects  map[string]*project
 	order     []string // project slugs in sorted order for stable listings
@@ -610,22 +611,35 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func main() {
 	var (
-		addr  = flag.String("addr", "0.0.0.0", "address to listen on (0.0.0.0 = all interfaces)")
-		port  = flag.Int("port", 5500, "port to listen on")
-		title = flag.String("title", "", `library title shown on the home page (default: the library folder's name)`)
-		dir   = flag.String("dir", "en", `pages subfolder each project must contain ("{project}/{dir}" structure)`)
-		ext   = flag.String("ext", "", `fallback translated file extension, e.g. ".txt" or ".md" (default: "ext" in a project's wnreader.toml, else .txt)`)
+		addr    = flag.String("addr", "0.0.0.0", "address to listen on (0.0.0.0 = all interfaces)")
+		port    = flag.Int("port", 5500, "port to listen on")
+		title   = flag.String("title", "", `library title shown on the home page (default: the library folder's name)`)
+		dir     = flag.String("dir", "en", `pages subfolder each project must contain ("{project}/{dir}" structure)`)
+		ext     = flag.String("ext", "", `fallback translated file extension, e.g. ".txt" or ".md" (default: "ext" in a project's wnreader.toml, else .txt)`)
+		rootdir = flag.String("rootdir", "", `library root directory containing the project folders (default: the folder containing the executable)`)
 	)
 	flag.Parse()
 
-	exe, err := os.Executable()
-	if err != nil {
-		log.Fatalf("wnreadersite: cannot locate executable: %v", err)
+	var rootDir string
+	if *rootdir != "" {
+		// Resolve once so per-request symlink checks can compare prefixes;
+		// EvalSymlinks also fails when the path does not exist, giving a
+		// clear error for a mistyped -rootdir.
+		resolved, err := filepath.EvalSymlinks(*rootdir)
+		if err != nil {
+			log.Fatalf("wnreadersite: resolving -rootdir %s: %v", *rootdir, err)
+		}
+		rootDir = resolved
+	} else {
+		exe, err := os.Executable()
+		if err != nil {
+			log.Fatalf("wnreadersite: cannot locate executable: %v", err)
+		}
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
+		rootDir = filepath.Dir(exe)
 	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
-	rootDir := filepath.Dir(exe)
 
 	projects, order, err := scanProjects(rootDir, *dir, *ext)
 	if err != nil {

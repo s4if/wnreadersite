@@ -18,10 +18,10 @@
 #        journalctl -u wnreader -f
 #
 # Notes:
-#   - WorkingDirectory matters: the app resolves your library content
-#     ({project}/{dir} folders and per-project wnreader.toml) relative to
-#     its working directory, so point it at the folder that contains your
-#     project directories.
+#   - The library content ({project}/{dir} folders and per-project
+#     wnreader.toml) is resolved from -rootdir if given, else the folder
+#     containing the executable. Either keep the binary in the library
+#     folder, or pass -rootdir to point at it explicitly.
 #   - By default it binds 127.0.0.1:5500, meant to sit behind a reverse
 #     proxy (nginx/Caddy). To expose it directly, change -addr to 0.0.0.0.
 #
@@ -61,7 +61,11 @@ RestartSec=5
 # Sandboxing / hardening (adjust if your layout needs more access)
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+# read-only (not true) so a library under /home stays readable when passed
+# via -rootdir; the server never writes, so this is still fully locked down.
+# Needs systemd >= 249; on older systemd use ProtectHome=true and keep the
+# library outside /home (e.g. /srv).
+ProtectHome=read-only
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true

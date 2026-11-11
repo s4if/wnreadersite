@@ -1,6 +1,11 @@
 # wnreadersite
 Server to read self-translated using AI webnovel from kaku or syosetu
 
+The library root is the directory holding the project folders, set with
+`-rootdir` (default: the folder containing the executable). Every direct
+subdirectory of it that contains a pages folder and a `wnreader.toml` is
+served as a project.
+
 ## Adding a series
 
 Create a subfolder in the library root containing the translated pages
@@ -8,6 +13,18 @@ Create a subfolder in the library root containing the translated pages
 that file exists, so renaming it away (e.g. to `wnreader.toml.bak`) takes
 the series offline. Restart the app to pick up changes; see
 `wnreader_example.toml` for the available settings.
+
+### Command line options
+
+    -addr 0.0.0.0   address to listen on (0.0.0.0 = all interfaces)
+    -port 5500      port to listen on
+    -title "…"      library title shown on the home page
+                    (default: the library folder's name)
+    -dir en         pages subfolder each project must contain
+    -ext .txt       fallback translated file extension (default: "ext" in a
+                    project's wnreader.toml, else .txt)
+    -rootdir /path  library root directory containing the project folders
+                    (default: the folder containing the executable)
 
 ## Building for maximum compatibility
 
