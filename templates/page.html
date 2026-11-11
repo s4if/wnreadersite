@@ -29,9 +29,9 @@
 {{define "content"}}
 {{template "pager" .}}
 
-<article class="card reading-card" aria-labelledby="page-title">
-  <header class="card__header">
-    <p class="eyebrow">Chapter</p>
+<article class="reading-card" aria-labelledby="page-title">
+  <header>
+    <small class="section-label">Chapter</small>
     <h1 id="page-title">{{.H1}}</h1>
   </header>
   <div class="content">{{.Body}}</div>

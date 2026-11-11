@@ -1,7 +1,7 @@
 {{define "content"}}
-<article class="card" aria-labelledby="index-title">
-  <header class="card__header">
-    <p class="eyebrow">Series</p>
+<article aria-labelledby="index-title">
+  <header>
+    <small class="section-label">Series</small>
     <h1 id="index-title">{{.Title}}</h1>
     {{if .Author}}<p class="series-byline">by {{.Author}}</p>{{end}}
     {{if .Description}}<p class="series-description">{{.Description}}</p>{{end}}
@@ -13,7 +13,7 @@
     <section class="chapter-group">
       <h2>
         {{$folder}}
-        <span class="chapter-group__count">— Pages: {{len .Pages}}</span>
+        <small class="chapter-group__count">{{len .Pages}} pages</small>
       </h2>
       <ul class="page-list">
         {{range .Pages}}

@@ -1,13 +1,18 @@
 # wnreader series configuration.
 #
-# Copy this file next to the wnreader executable as wnreader.toml and
-# uncomment the lines you need. Everything here is optional: missing keys
-# (or a missing file entirely) simply fall back to the defaults noted
-# below.
+# Copy this file into a series folder as wnreader.toml and uncomment the
+# lines you need. The file doubles as the serve switch: a series folder is
+# only served while wnreader.toml exists in it, so renaming the file away
+# (e.g. to wnreader.toml.bak) and restarting the app takes the series
+# offline — rename it back to bring the series online again.
+#
+# All keys are optional: missing keys (or an entirely empty file) simply
+# fall back to the defaults noted below.
 #
 # Precedence: command-line flags beat this file, this file beats the
 # defaults. A file with TOML syntax errors is logged and ignored — it can
-# never prevent the app from starting.
+# never prevent the app from starting. (It still counts as present, so a
+# series with a broken wnreader.toml is served with default settings.)
 
 # Full series title, shown in the site header, on the chapter index, and
 # in page titles. Flag equivalent: -title.

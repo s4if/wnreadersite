@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,7 +12,9 @@ import (
 )
 
 // writeProject creates a minimal project under root: a "{slug}/en" folder
-// tree with the given files keyed by "Chapter/name.ext".
+// tree with the given files keyed by "Chapter/name.ext". An empty
+// wnreader.toml is written too, because scanProjects only serves folders
+// that have one; tests that need a missing config can rename it away.
 func writeProject(t *testing.T, root, slug string, files map[string]string) {
 	t.Helper()
 	for name, contents := range files {
@@ -21,6 +25,13 @@ func writeProject(t *testing.T, root, slug string, files map[string]string) {
 		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, slug), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An empty wnreader.toml: scanProjects only serves folders that have one.
+	if err := os.WriteFile(filepath.Join(root, slug, "wnreader.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -122,6 +133,93 @@ func TestScanProjectsDiscovery(t *testing.T) {
 	}
 	if got := projects["delta"]; got == nil || got.BaseDir != projects["alpha"].BaseDir {
 		t.Errorf("delta should resolve to alpha's pages folder, got %#v", got)
+	}
+}
+
+func TestScanProjectsRequiresConfigFile(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "One\n"})
+	configPath := filepath.Join(root, "alpha", "wnreader.toml")
+
+	// With wnreader.toml in place the project is served under its slug.
+	_, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"alpha"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+
+	// Renaming the config away takes the series offline.
+	if err := os.Rename(configPath, configPath+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	projects, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 0 || len(order) != 0 {
+		t.Errorf("projects = %v, order = %v, want none without wnreader.toml", projects, order)
+	}
+
+	// Renaming it back brings the series online again, same slug.
+	if err := os.Rename(configPath+".bak", configPath); err != nil {
+		t.Fatal(err)
+	}
+	_, order, err = scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"alpha"}; !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+}
+
+func TestScanProjectsSortsNaturally(t *testing.T) {
+	root := t.TempDir()
+	for _, slug := range []string{"ch101-ch120", "ch1-ch20", "ch21-ch40"} {
+		writeProject(t, root, slug, map[string]string{"c/1.txt": "x\n"})
+	}
+
+	_, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ch1-ch20", "ch21-ch40", "ch101-ch120"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+}
+
+func TestScanProjectsSortsBySeriesTitle(t *testing.T) {
+	root := t.TempDir()
+	// Slugs sort naturally as z < zz < zzz, but series titles reverse that.
+	writeProject(t, root, "zzz", map[string]string{"c/1.txt": "x\n"})
+	writeProject(t, root, "z", map[string]string{"c/1.txt": "x\n"})
+	writeProject(t, root, "zz", map[string]string{"c/1.txt": "x\n"})
+	for slug, series := range map[string]string{
+		"zzz": "Alpha",
+		"z":   "Beta",
+		"zz":  "aaa", // case-insensitive: aaa comes before Alpha
+	} {
+		path := filepath.Join(root, slug, "wnreader.toml")
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("series = %q\n", series)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	projects, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"zz", "zzz", "z"} // aaa, Alpha, Beta
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+	for _, slug := range want {
+		if projects[slug] == nil {
+			t.Fatalf("project %q missing", slug)
+		}
 	}
 }
 
@@ -350,6 +448,53 @@ func TestHandleStyles(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPicoStyles(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "One\n"})
+	s := buildServer(t, root)
+
+	home := do(s, "/").Body.String()
+	if !strings.Contains(home, `href="/pico.classless.min.css"`) || strings.Contains(home, "cdn.jsdelivr.net") {
+		t.Errorf("home does not use the local Pico stylesheet: %s", home)
+	}
+
+	response := do(s, "/pico.classless.min.css")
+	if response.Code != 200 {
+		t.Fatalf("Pico CSS status = %d, want 200", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/css; charset=utf-8" {
+		t.Errorf("Pico CSS Content-Type = %q", got)
+	}
+	css, err := webAssets.ReadFile("templates/pico.classless.min.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response.Body.Bytes(), css) {
+		t.Error("Pico route does not serve the embedded stylesheet")
+	}
+
+	secured := httptest.NewRecorder()
+	securityHeaders(s.routes()).ServeHTTP(secured, httptest.NewRequest("GET", "/", nil))
+	if got := secured.Header().Get("Content-Security-Policy"); strings.Contains(got, "cdn.jsdelivr.net") || strings.Contains(got, "fonts.googleapis.com") {
+		t.Errorf("CSP still allows third-party styles: %q", got)
+	}
+
+	script := do(s, "/reader.js")
+	if script.Code != 200 {
+		t.Fatalf("reader.js status = %d, want 200", script.Code)
+	}
+	if got := script.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Errorf("reader.js Content-Type = %q", got)
+	}
+	js, err := webAssets.ReadFile("templates/reader.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(script.Body.Bytes(), js) {
+		t.Error("reader.js route does not serve the embedded script")
+	}
+}
+
 func TestScanPagesUsesFirstNonEmptyLineAsTitle(t *testing.T) {
 	baseDir := t.TempDir()
 	chapterDir := filepath.Join(baseDir, "Chapter 1")
@@ -377,5 +522,37 @@ func TestScanPagesUsesFirstNonEmptyLineAsTitle(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scanPages() = %#v, want %#v", got, want)
+	}
+}
+
+func TestScanPagesSortsNaturally(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "series", map[string]string{
+		"ch1-ch20/1.txt":    "one\n",
+		"ch1-ch20/2.txt":    "two\n",
+		"ch1-ch20/10.txt":   "ten\n",
+		"ch21-ch40/1.txt":   "twenty one\n",
+		"ch101-ch120/1.txt": "hundred one\n",
+	})
+
+	got := scanPages(filepath.Join(root, "series", "en"), ".txt")
+	var folders []string
+	var names []string
+	for _, p := range got {
+		if len(folders) == 0 || folders[len(folders)-1] != p.Folder {
+			folders = append(folders, p.Folder)
+		}
+		if p.Folder == "ch1-ch20" {
+			names = append(names, p.Name)
+		}
+	}
+
+	wantFolders := []string{"ch1-ch20", "ch21-ch40", "ch101-ch120"}
+	if !reflect.DeepEqual(folders, wantFolders) {
+		t.Errorf("folder order = %v, want %v", folders, wantFolders)
+	}
+	wantNames := []string{"1", "2", "10"}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Errorf("page order = %v, want %v", names, wantNames)
 	}
 }

@@ -5,14 +5,16 @@
 //	routes:  /                           project list (the library home)
 //	         /{project}/                  chapter index of one series
 //	         /{project}/{folder}/{name}   rendered page ({project}/{dir}/{folder}/{name}{ext})
-//	config:  {project}/wnreader.toml      optional per-series settings file,
-//	                                      looked up in each project folder;
+//	config:  {project}/wnreader.toml      per-series settings file and serve
+//	                                      marker: a project is only served
+//	                                      while this file exists (rename it
+//	                                      away to take a series offline);
 //	                                      missing keys keep their defaults
 //	run:     ./wnreadersite [-title "…"] [-port 5500] [-addr 0.0.0.0] [-dir en] [-ext .txt]
 //
 // The library root is the folder containing the executable. Every direct
-// subdirectory of it that contains a pages folder (default "en") is served
-// as a project. The whole library is scanned once at startup, so restart
+// subdirectory of it that contains a pages folder (default "en") and a
+// wnreader.toml is served as a project. The whole library is scanned once at startup, so restart
 // the app to pick up added or changed projects, pages, or config files.
 package main
 
@@ -79,10 +81,10 @@ type viewData struct {
 	Projects    []*project // home only
 }
 
-// webAssets are compiled into the executable at build time. The chapter text
-// remains external and is read from the projects' pages folders at runtime.
+// webAssets are compiled into the executable at build time, including the
+// vendored Pico CSS v2.1.1 stylesheet. Chapter text remains external.
 //
-//go:embed templates/*.html templates/*.css
+//go:embed templates/*.html templates/*.css templates/*.js templates/pico.LICENSE.md
 var webAssets embed.FS
 
 var tmplFuncs = template.FuncMap{"esc": url.PathEscape}
@@ -141,8 +143,9 @@ type server struct {
 	order     []string // project slugs in sorted order for stable listings
 }
 
-// config holds the optional per-project settings from a project's
-// wnreader.toml. Fields left empty mean "unset"; scanProjects resolves them
+// config holds the per-project settings from a project's wnreader.toml (the
+// file must exist for the project to be served, but may be empty). Fields
+// left empty mean "unset"; scanProjects resolves them
 // against the global flags and built-in defaults with the precedence
 // project toml > global flag > built-in default.
 type config struct {
@@ -152,8 +155,9 @@ type config struct {
 	Ext         string `toml:"ext"`
 }
 
-// loadConfig reads an optional TOML file. A missing file is not an error: the
-// zero config is returned so every setting falls back to its default. A file
+// loadConfig reads a project's TOML file. A missing file is not an error: the
+// zero config is returned so every setting falls back to its default.
+// (Existence of the file decides service in scanProjects, not here.) A file
 // that fails to parse is reported (with the offending line and column) and
 // likewise ignored, so a broken config never prevents the app from starting.
 func loadConfig(path string) config {
@@ -224,16 +228,58 @@ func fileTitle(path string) string {
 	return ""
 }
 
+// naturalLess reports whether a sorts before b in human order: runs of
+// digits compare by numeric value (so "ch21" comes before "ch101") while
+// everything else compares bytewise. Equal numeric runs fall back to a plain
+// string comparison, keeping the order deterministic when names differ only
+// in leading zeros ("01" vs "1").
+func naturalLess(a, b string) bool {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if isASCIIDigit(a[i]) && isASCIIDigit(b[j]) {
+			startA, startB := i, j
+			for i < len(a) && isASCIIDigit(a[i]) {
+				i++
+			}
+			for j < len(b) && isASCIIDigit(b[j]) {
+				j++
+			}
+			numA := strings.TrimLeft(a[startA:i], "0")
+			numB := strings.TrimLeft(b[startB:j], "0")
+			if len(numA) != len(numB) {
+				return len(numA) < len(numB)
+			}
+			if numA != numB {
+				return numA < numB
+			}
+			continue
+		}
+		if a[i] != b[j] {
+			return a[i] < b[j]
+		}
+		i++
+		j++
+	}
+	if i < len(a) || j < len(b) {
+		return i == len(a)
+	}
+	return a < b
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
 // scanPages returns every (folder, name, title) tuple for files with the
-// given extension under baseDir, sorted. Titles come from the first
-// non-empty line in the first five lines and fall back to the filename.
+// given extension under baseDir, sorted in natural (numeric-aware) order so
+// chapter folders like ch21-ch40 come before ch101-ch120. Titles come from
+// the first non-empty line in the first five lines and fall back to the
+// filename.
 func scanPages(baseDir, fileExt string) []pageRef {
 	var pages []pageRef
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
 		return pages
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	sort.Slice(entries, func(i, j int) bool { return naturalLess(entries[i].Name(), entries[j].Name()) })
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -248,7 +294,7 @@ func scanPages(baseDir, fileExt string) []pageRef {
 				names = append(names, strings.TrimSuffix(f.Name(), fileExt))
 			}
 		}
-		sort.Strings(names)
+		sort.Slice(names, func(i, j int) bool { return naturalLess(names[i], names[j]) })
 		for _, n := range names {
 			title := fileTitle(filepath.Join(baseDir, e.Name(), n+fileExt))
 			if title == "" {
@@ -282,10 +328,13 @@ func groupChapters(pages []pageRef) []chapter {
 }
 
 // scanProjects walks the library root once at startup and loads every direct
-// subdirectory that contains a pages folder as a project. Symlinked project
-// folders are followed; entries that are not projects (plain files, or
-// directories without a pages folder) are skipped silently so the root can
-// also hold the executable and unrelated files. Per-project problems are
+// subdirectory that contains a pages folder and a wnreader.toml as a
+// project. Symlinked project folders are followed; entries that are not
+// projects (plain files, or directories without a pages folder) are skipped
+// silently so the root can also hold the executable and unrelated files.
+// The wnreader.toml file is the serve switch: a folder without one is
+// logged and skipped, so renaming the file away takes a series offline.
+// Per-project problems are
 // logged and skipped; only a broken root is an error.
 func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []string, error) {
 	entries, err := os.ReadDir(root)
@@ -314,7 +363,12 @@ func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []st
 		}
 
 		slug := e.Name()
-		cfg := loadConfig(filepath.Join(dirPath, "wnreader.toml"))
+		configPath := filepath.Join(dirPath, "wnreader.toml")
+		if _, err := os.Stat(configPath); err != nil {
+			log.Printf("wnreadersite: %s: no wnreader.toml (not serving)", slug)
+			continue
+		}
+		cfg := loadConfig(configPath)
 		fileExt, err := normalizeExtension(firstNonEmpty(cfg.Ext, extFallback, ".txt"))
 		if err != nil {
 			log.Printf("wnreadersite: %s: %v (skipping project)", slug, err)
@@ -335,12 +389,32 @@ func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []st
 		}
 		order = append(order, slug)
 	}
-	sort.Strings(order)
+	// Home page order follows the series title shown there, not the raw
+	// directory name. Titles compare case-insensitively in natural order;
+	// raw titles then slugs break ties so the listing stays deterministic.
+	sort.Slice(order, func(i, j int) bool {
+		ti, tj := projects[order[i]].Title, projects[order[j]].Title
+		if li, lj := strings.ToLower(ti), strings.ToLower(tj); li != lj {
+			return naturalLess(li, lj)
+		}
+		if ti != tj {
+			return ti < tj
+		}
+		return naturalLess(order[i], order[j])
+	})
 	return projects, order, nil
 }
 
 func handleStyles(w http.ResponseWriter, _ *http.Request) {
-	css, err := webAssets.ReadFile("templates/styles.css")
+	serveEmbeddedCSS(w, "templates/styles.css")
+}
+
+func handlePicoStyles(w http.ResponseWriter, _ *http.Request) {
+	serveEmbeddedCSS(w, "templates/pico.classless.min.css")
+}
+
+func serveEmbeddedCSS(w http.ResponseWriter, name string) {
+	css, err := webAssets.ReadFile(name)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -348,6 +422,17 @@ func handleStyles(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(css)
+}
+
+func handleScript(w http.ResponseWriter, _ *http.Request) {
+	js, err := webAssets.ReadFile("templates/reader.js")
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(js)
 }
 
 func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
@@ -501,6 +586,8 @@ func safeSegment(s string) bool {
 func (s *server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /styles.css", handleStyles)
+	mux.HandleFunc("GET /pico.classless.min.css", handlePicoStyles)
+	mux.HandleFunc("GET /reader.js", handleScript)
 	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /{project}", s.handleProjectRedirect)
 	mux.HandleFunc("GET /{project}/{$}", s.handleProjectIndex)
@@ -509,14 +596,14 @@ func (s *server) routes() *http.ServeMux {
 }
 
 // securityHeaders sets response hardening headers on every response.
-// CSP allows same-origin styles and chapter images but no scripts — the chapter
-// files are trusted, and this is defense in depth if one is ever swapped.
+// CSP allows only same-origin styles, the reader script, and chapter images —
+// chapter files are trusted, and this is defense in depth if one is ever swapped.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src * data:")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; img-src * data:")
 		next.ServeHTTP(w, r)
 	})
 }

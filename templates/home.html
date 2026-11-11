@@ -1,18 +1,18 @@
 {{define "content"}}
-<article class="card" aria-labelledby="home-title">
-  <header class="card__header">
-    <p class="eyebrow">Library</p>
+<article aria-labelledby="home-title">
+  <header>
+    <small class="section-label">Library</small>
     <h1 id="home-title">{{.SiteTitle}}</h1>
   </header>
 
   {{if .Projects}}
   <ul class="project-list">
     {{range .Projects}}
-    <li class="project-item">
+    <li>
       <a class="project-item__title" href="/{{esc .Slug}}/">{{.Title}}</a>
       <p class="series-byline">by {{.Author}}</p>
       {{if .Blurb}}<p class="series-description">{{.Blurb}}</p>{{end}}
-      <p class="project-item__meta">{{len .Pages}} pages</p>
+      <small class="project-item__meta">{{len .Pages}} pages</small>
     </li>
     {{end}}
   </ul>
