@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 )
 
 // writeProject creates a minimal project under root: a "{slug}/en" folder
-// tree with the given files keyed by "Chapter/name.ext".
+// tree with the given files keyed by "Chapter/name.ext". An empty
+// wnreader.toml is written too, because scanProjects only serves folders
+// that have one; tests that need a missing config can rename it away.
 func writeProject(t *testing.T, root, slug string, files map[string]string) {
 	t.Helper()
 	for name, contents := range files {
@@ -22,6 +25,13 @@ func writeProject(t *testing.T, root, slug string, files map[string]string) {
 		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, slug), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An empty wnreader.toml: scanProjects only serves folders that have one.
+	if err := os.WriteFile(filepath.Join(root, slug, "wnreader.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -126,6 +136,45 @@ func TestScanProjectsDiscovery(t *testing.T) {
 	}
 }
 
+func TestScanProjectsRequiresConfigFile(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "One\n"})
+	configPath := filepath.Join(root, "alpha", "wnreader.toml")
+
+	// With wnreader.toml in place the project is served under its slug.
+	_, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"alpha"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+
+	// Renaming the config away takes the series offline.
+	if err := os.Rename(configPath, configPath+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	projects, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 0 || len(order) != 0 {
+		t.Errorf("projects = %v, order = %v, want none without wnreader.toml", projects, order)
+	}
+
+	// Renaming it back brings the series online again, same slug.
+	if err := os.Rename(configPath+".bak", configPath); err != nil {
+		t.Fatal(err)
+	}
+	_, order, err = scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"alpha"}; !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+}
+
 func TestScanProjectsSortsNaturally(t *testing.T) {
 	root := t.TempDir()
 	for _, slug := range []string{"ch101-ch120", "ch1-ch20", "ch21-ch40"} {
@@ -139,6 +188,38 @@ func TestScanProjectsSortsNaturally(t *testing.T) {
 	want := []string{"ch1-ch20", "ch21-ch40", "ch101-ch120"}
 	if !reflect.DeepEqual(order, want) {
 		t.Errorf("order = %v, want %v", order, want)
+	}
+}
+
+func TestScanProjectsSortsBySeriesTitle(t *testing.T) {
+	root := t.TempDir()
+	// Slugs sort naturally as z < zz < zzz, but series titles reverse that.
+	writeProject(t, root, "zzz", map[string]string{"c/1.txt": "x\n"})
+	writeProject(t, root, "z", map[string]string{"c/1.txt": "x\n"})
+	writeProject(t, root, "zz", map[string]string{"c/1.txt": "x\n"})
+	for slug, series := range map[string]string{
+		"zzz": "Alpha",
+		"z":   "Beta",
+		"zz":  "aaa", // case-insensitive: aaa comes before Alpha
+	} {
+		path := filepath.Join(root, slug, "wnreader.toml")
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("series = %q\n", series)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	projects, order, err := scanProjects(root, "en", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"zz", "zzz", "z"} // aaa, Alpha, Beta
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+	for _, slug := range want {
+		if projects[slug] == nil {
+			t.Fatalf("project %q missing", slug)
+		}
 	}
 }
 

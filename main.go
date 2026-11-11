@@ -5,14 +5,16 @@
 //	routes:  /                           project list (the library home)
 //	         /{project}/                  chapter index of one series
 //	         /{project}/{folder}/{name}   rendered page ({project}/{dir}/{folder}/{name}{ext})
-//	config:  {project}/wnreader.toml      optional per-series settings file,
-//	                                      looked up in each project folder;
+//	config:  {project}/wnreader.toml      per-series settings file and serve
+//	                                      marker: a project is only served
+//	                                      while this file exists (rename it
+//	                                      away to take a series offline);
 //	                                      missing keys keep their defaults
 //	run:     ./wnreadersite [-title "…"] [-port 5500] [-addr 0.0.0.0] [-dir en] [-ext .txt]
 //
 // The library root is the folder containing the executable. Every direct
-// subdirectory of it that contains a pages folder (default "en") is served
-// as a project. The whole library is scanned once at startup, so restart
+// subdirectory of it that contains a pages folder (default "en") and a
+// wnreader.toml is served as a project. The whole library is scanned once at startup, so restart
 // the app to pick up added or changed projects, pages, or config files.
 package main
 
@@ -141,8 +143,9 @@ type server struct {
 	order     []string // project slugs in sorted order for stable listings
 }
 
-// config holds the optional per-project settings from a project's
-// wnreader.toml. Fields left empty mean "unset"; scanProjects resolves them
+// config holds the per-project settings from a project's wnreader.toml (the
+// file must exist for the project to be served, but may be empty). Fields
+// left empty mean "unset"; scanProjects resolves them
 // against the global flags and built-in defaults with the precedence
 // project toml > global flag > built-in default.
 type config struct {
@@ -152,8 +155,9 @@ type config struct {
 	Ext         string `toml:"ext"`
 }
 
-// loadConfig reads an optional TOML file. A missing file is not an error: the
-// zero config is returned so every setting falls back to its default. A file
+// loadConfig reads a project's TOML file. A missing file is not an error: the
+// zero config is returned so every setting falls back to its default.
+// (Existence of the file decides service in scanProjects, not here.) A file
 // that fails to parse is reported (with the offending line and column) and
 // likewise ignored, so a broken config never prevents the app from starting.
 func loadConfig(path string) config {
@@ -324,10 +328,13 @@ func groupChapters(pages []pageRef) []chapter {
 }
 
 // scanProjects walks the library root once at startup and loads every direct
-// subdirectory that contains a pages folder as a project. Symlinked project
-// folders are followed; entries that are not projects (plain files, or
-// directories without a pages folder) are skipped silently so the root can
-// also hold the executable and unrelated files. Per-project problems are
+// subdirectory that contains a pages folder and a wnreader.toml as a
+// project. Symlinked project folders are followed; entries that are not
+// projects (plain files, or directories without a pages folder) are skipped
+// silently so the root can also hold the executable and unrelated files.
+// The wnreader.toml file is the serve switch: a folder without one is
+// logged and skipped, so renaming the file away takes a series offline.
+// Per-project problems are
 // logged and skipped; only a broken root is an error.
 func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []string, error) {
 	entries, err := os.ReadDir(root)
@@ -356,7 +363,12 @@ func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []st
 		}
 
 		slug := e.Name()
-		cfg := loadConfig(filepath.Join(dirPath, "wnreader.toml"))
+		configPath := filepath.Join(dirPath, "wnreader.toml")
+		if _, err := os.Stat(configPath); err != nil {
+			log.Printf("wnreadersite: %s: no wnreader.toml (not serving)", slug)
+			continue
+		}
+		cfg := loadConfig(configPath)
 		fileExt, err := normalizeExtension(firstNonEmpty(cfg.Ext, extFallback, ".txt"))
 		if err != nil {
 			log.Printf("wnreadersite: %s: %v (skipping project)", slug, err)
@@ -377,7 +389,19 @@ func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []st
 		}
 		order = append(order, slug)
 	}
-	sort.Slice(order, func(i, j int) bool { return naturalLess(order[i], order[j]) })
+	// Home page order follows the series title shown there, not the raw
+	// directory name. Titles compare case-insensitively in natural order;
+	// raw titles then slugs break ties so the listing stays deterministic.
+	sort.Slice(order, func(i, j int) bool {
+		ti, tj := projects[order[i]].Title, projects[order[j]].Title
+		if li, lj := strings.ToLower(ti), strings.ToLower(tj); li != lj {
+			return naturalLess(li, lj)
+		}
+		if ti != tj {
+			return ti < tj
+		}
+		return naturalLess(order[i], order[j])
+	})
 	return projects, order, nil
 }
 
