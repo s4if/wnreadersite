@@ -10,13 +10,19 @@
 //	                                      while this file exists (rename it
 //	                                      away to take a series offline);
 //	                                      missing keys keep their defaults
-//	run:     ./wnreadersite [-title "…"] [-port 5500] [-addr 0.0.0.0] [-dir en] [-ext .txt] [-rootdir /path]
+//	run:     ./wnreadersite [-title "…"] [-port 5500] [-addr 0.0.0.0] [-dir en] [-ext .txt] [-rootdir /path] [-admin 127.0.0.1:5501]
+//	reload:  the library is re-scanned on SIGHUP (systemctl reload) or on a
+//	        local POST /reload to the loopback-only admin listener
+//	        (-admin, default 127.0.0.1:5501, "" disables) — e.g. from a git
+//	        post-merge hook after pulling new chapters. A failed rescan
+//	        keeps serving the previous snapshot.
 //
 // The library root is the directory holding the project folders, set with
 // -rootdir (default: the folder containing the executable). Every direct
 // subdirectory of it that contains a pages folder (default "en") and a
-// wnreader.toml is served as a project. The whole library is scanned once at startup, so restart
-// the app to pick up added or changed projects, pages, or config files.
+// wnreader.toml is served as a project. The library is scanned at startup;
+// added or changed projects, pages, and config files are picked up by the
+// reload triggers described above, without a restart.
 package main
 
 import (
@@ -28,12 +34,17 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -54,8 +65,8 @@ type chapter struct {
 }
 
 // project is one translation work discovered under the library root. All of
-// its state — config, page list, chapter grouping — is resolved once at
-// startup and served read-only afterwards.
+// its state — config, page list, chapter grouping — is resolved in one scan
+// and served read-only until the next scan replaces the whole snapshot.
 type project struct {
 	Slug        string // directory name under the library root, used in URLs
 	Title       string // series title: "series" in wnreader.toml, else the slug
@@ -136,12 +147,24 @@ func escapeBoardQuotes(src []byte) []byte {
 	return bytes.ReplaceAll(src, []byte(">"), []byte("&gt;"))
 }
 
-// server holds the library state scanned once at startup.
+// library is one immutable snapshot of the whole collection, replaced whole
+// on every scan. Handlers load the current pointer once per request, so they
+// always see a consistent (projects, order) pair without locking.
+type library struct {
+	projects map[string]*project
+	order    []string // project slugs in sorted order for stable listings
+}
+
+// server holds the library state. The initial scan happens at startup;
+// afterwards SIGHUP or the loopback reload endpoint swap in fresh snapshots
+// (see reload).
 type server struct {
-	rootDir   string // absolute path of the library root (-rootdir, else the executable's folder)
-	siteTitle string // library title shown on the home page
-	projects  map[string]*project
-	order     []string // project slugs in sorted order for stable listings
+	rootDir     string // absolute path of the library root (-rootdir, else the executable's folder)
+	siteTitle   string // library title shown on the home page
+	pagesDir    string // pages subfolder each project must contain (-dir)
+	extFallback string // fallback extension for translated files (-ext)
+	lib         atomic.Pointer[library]
+	reloadMu    sync.Mutex // serializes rescans so snapshots never publish out of order
 }
 
 // config holds the per-project settings from a project's wnreader.toml (the
@@ -406,6 +429,60 @@ func scanProjects(root, pagesDir, extFallback string) (map[string]*project, []st
 	return projects, order, nil
 }
 
+// reload re-scans the library root and atomically swaps in the resulting
+// snapshot. Rescans are serialized: a slow scan overlapped by a newer one
+// can never publish an out-of-order library. A failed scan returns an error
+// and keeps the current snapshot (the site keeps serving the old content
+// instead of going blank); an empty scan is accepted, matching the
+// documented rule that a series without a wnreader.toml is offline.
+// Returns the number of projects now served.
+func (s *server) reload() (int, error) {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	projects, order, err := scanProjects(s.rootDir, s.pagesDir, s.extFallback)
+	if err != nil {
+		return 0, fmt.Errorf("re-scanning %s: %w (keeping the previous library)", s.rootDir, err)
+	}
+	s.lib.Store(&library{projects: projects, order: order})
+	return len(projects), nil
+}
+
+// watchSIGHUP re-scans the library on every SIGHUP, so `systemctl reload`
+// (ExecReload sends SIGHUP to the main process) picks up pulled content
+// without a restart. signal.Notify coalesces bursts while the loop body is
+// running, and reload serializes the rest, so overlapping signals collapse
+// into at most one queued rescan.
+func (s *server) watchSIGHUP() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	for range ch {
+		if n, err := s.reload(); err != nil {
+			log.Printf("wnreadersite: SIGHUP: %v", err)
+		} else {
+			log.Printf("wnreadersite: SIGHUP: serving %d projects", n)
+		}
+	}
+}
+
+// adminRoutes builds the routing table for the loopback-only admin
+// listener. It is a separate listener from the public one so the reload
+// route can never be reached through a reverse proxy: a proxy on the same
+// host connects from 127.0.0.1, which would make an address check on the
+// main listener meaningless. A local user poking /reload is harmless —
+// rescans are read-only, cheap, and serialized.
+func (s *server) adminRoutes() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /reload", func(w http.ResponseWriter, _ *http.Request) {
+		n, err := s.reload()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "reloaded: %d projects\n", n)
+	})
+	return mux
+}
+
 func handleStyles(w http.ResponseWriter, _ *http.Request) {
 	serveEmbeddedCSS(w, "templates/styles.css")
 }
@@ -437,9 +514,10 @@ func handleScript(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
-	list := make([]*project, len(s.order))
-	for i, slug := range s.order {
-		list[i] = s.projects[slug]
+	lib := s.lib.Load()
+	list := make([]*project, len(lib.order))
+	for i, slug := range lib.order {
+		list[i] = lib.projects[slug]
 	}
 	data := viewData{
 		Title:     s.siteTitle,
@@ -456,7 +534,7 @@ func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
 // other absolute links resolve consistently.
 func (s *server) handleProjectRedirect(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("project")
-	if s.projects[slug] == nil {
+	if s.lib.Load().projects[slug] == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -464,7 +542,7 @@ func (s *server) handleProjectRedirect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleProjectIndex(w http.ResponseWriter, r *http.Request) {
-	p := s.projects[r.PathValue("project")]
+	p := s.lib.Load().projects[r.PathValue("project")]
 	if p == nil {
 		http.NotFound(w, r)
 		return
@@ -484,7 +562,7 @@ func (s *server) handleProjectIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handlePage(w http.ResponseWriter, r *http.Request) {
-	p := s.projects[r.PathValue("project")]
+	p := s.lib.Load().projects[r.PathValue("project")]
 	if p == nil {
 		http.NotFound(w, r)
 		return
@@ -617,6 +695,7 @@ func main() {
 		dir     = flag.String("dir", "en", `pages subfolder each project must contain ("{project}/{dir}" structure)`)
 		ext     = flag.String("ext", "", `fallback translated file extension, e.g. ".txt" or ".md" (default: "ext" in a project's wnreader.toml, else .txt)`)
 		rootdir = flag.String("rootdir", "", `library root directory containing the project folders (default: the folder containing the executable)`)
+		admin   = flag.String("admin", "127.0.0.1:5501", `loopback address of the reload endpoint ("addr:port"; POST /reload re-scans the library; "" disables it)`)
 	)
 	flag.Parse()
 
@@ -650,17 +729,38 @@ func main() {
 	}
 
 	s := &server{
-		rootDir:   rootDir,
-		siteTitle: firstNonEmpty(*title, filepath.Base(rootDir)),
-		projects:  projects,
-		order:     order,
+		rootDir:     rootDir,
+		siteTitle:   firstNonEmpty(*title, filepath.Base(rootDir)),
+		pagesDir:    *dir,
+		extFallback: *ext,
 	}
+	s.lib.Store(&library{projects: projects, order: order})
 	for _, slug := range order {
 		p := projects[slug]
 		log.Printf("wnreadersite: project %q [%s] — %d pages", p.Title, slug, len(p.Pages))
 	}
 
 	mux := s.routes()
+
+	// Reload triggers: SIGHUP (systemctl reload) and the loopback-only
+	// admin listener. The admin listener binds synchronously so a port
+	// clash is reported at startup, but a failure never takes the public
+	// site down — a git hook's curl just fails visibly instead.
+	go s.watchSIGHUP()
+	if *admin != "" {
+		ln, err := net.Listen("tcp", *admin)
+		if err != nil {
+			log.Printf("wnreadersite: admin listener on %s: %v (continuing without the reload endpoint)", *admin, err)
+		} else {
+			adminSrv := &http.Server{Handler: s.adminRoutes(), ReadHeaderTimeout: 10 * time.Second}
+			go func() {
+				if err := adminSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Printf("wnreadersite: admin listener: %v", err)
+				}
+			}()
+			log.Printf("wnreadersite: reload endpoint on http://%s/reload (POST)", ln.Addr())
+		}
+	}
 
 	listenAddr := fmt.Sprintf("%s:%d", *addr, *port)
 	log.Printf("wnreadersite: %d projects in %s", len(projects), rootDir)

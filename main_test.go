@@ -46,12 +46,13 @@ func buildServer(t *testing.T, root string) *server {
 	if len(projects) == 0 {
 		t.Fatal("no projects discovered")
 	}
-	return &server{
+	s := &server{
 		rootDir:   root,
 		siteTitle: "Test Library",
-		projects:  projects,
-		order:     order,
+		pagesDir:  "en",
 	}
+	s.lib.Store(&library{projects: projects, order: order})
+	return s
 }
 
 func TestLoadConfig(t *testing.T) {
@@ -262,6 +263,134 @@ func do(s *server, target string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
 	return rec
+}
+
+func TestReloadPicksUpChanges(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "Alpha One\n"})
+	s := buildServer(t, root)
+
+	// A series that does not exist yet is not served.
+	if body := do(s, "/").Body.String(); strings.Contains(body, "/beta/") {
+		t.Error("home lists beta before it exists")
+	}
+
+	// Pulling in a new series and a new page in an existing series is
+	// picked up by the next reload.
+	writeProject(t, root, "beta", map[string]string{"c/1.txt": "Beta One\n"})
+	if err := os.WriteFile(filepath.Join(root, "alpha", "en", "c", "2.txt"), []byte("Alpha Two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.reload(); err != nil || n != 2 {
+		t.Fatalf("reload() = (%d, %v), want (2, nil)", n, err)
+	}
+	if body := do(s, "/").Body.String(); !strings.Contains(body, `href="/beta/"`) {
+		t.Errorf("home does not list the new series after reload:\n%s", body)
+	}
+	if index := do(s, "/alpha/").Body.String(); !strings.Contains(index, "Alpha Two") {
+		t.Errorf("index misses the new page after reload:\n%s", index)
+	}
+	if response := do(s, "/beta/c/1"); response.Code != 200 {
+		t.Errorf("new project page status = %d, want 200", response.Code)
+	}
+
+	// Renaming a config away takes the series offline on the next reload.
+	if err := os.Rename(filepath.Join(root, "beta", "wnreader.toml"), filepath.Join(root, "beta", "wnreader.toml.bak")); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.reload(); err != nil || n != 1 {
+		t.Fatalf("reload() after config rename = (%d, %v), want (1, nil)", n, err)
+	}
+	if body := do(s, "/").Body.String(); strings.Contains(body, "/beta/") {
+		t.Errorf("home still lists beta after its config was renamed away:\n%s", body)
+	}
+}
+
+func TestReloadKeepsStateOnError(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "Alpha One\n"})
+	s := buildServer(t, root)
+
+	// Moving the whole root away makes the rescan fail; the server must
+	// keep serving the previous snapshot instead of going blank.
+	if err := os.Rename(root, root+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.reload(); err == nil {
+		t.Error("reload() with missing root = nil error, want error")
+	}
+	if code := do(s, "/").Code; code != 200 {
+		t.Errorf("home status after failed reload = %d, want 200 (old snapshot kept)", code)
+	}
+
+	// Restoring the root makes the same reload succeed again.
+	if err := os.Rename(root+".gone", root); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.reload(); err != nil || n != 1 {
+		t.Errorf("reload() after restore = (%d, %v), want (1, nil)", n, err)
+	}
+}
+
+func TestAdminReloadEndpoint(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "Alpha One\n"})
+	s := buildServer(t, root)
+	admin := s.adminRoutes()
+
+	writeProject(t, root, "beta", map[string]string{"c/1.txt": "Beta One\n"})
+	rec := httptest.NewRecorder()
+	admin.ServeHTTP(rec, httptest.NewRequest("POST", "/reload", nil))
+	if rec.Code != 200 {
+		t.Fatalf("POST /reload status = %d, want 200", rec.Code)
+	}
+	if got, want := rec.Body.String(), "reloaded: 2 projects\n"; got != want {
+		t.Errorf("POST /reload body = %q, want %q", got, want)
+	}
+
+	// The swapped snapshot is immediately visible on the public routes.
+	if body := do(s, "/").Body.String(); !strings.Contains(body, `href="/beta/"`) {
+		t.Errorf("home does not list beta after POST /reload:\n%s", body)
+	}
+
+	// Only POST is accepted.
+	rec = httptest.NewRecorder()
+	admin.ServeHTTP(rec, httptest.NewRequest("GET", "/reload", nil))
+	if rec.Code != 405 {
+		t.Errorf("GET /reload status = %d, want 405", rec.Code)
+	}
+}
+
+func TestReloadConcurrentWithRequests(t *testing.T) {
+	// Run only under -race in CI terms — here it always runs, so the race
+	// detector exercises reloads racing with live request handlers.
+	root := t.TempDir()
+	writeProject(t, root, "alpha", map[string]string{"c/1.txt": "Alpha One\n"})
+	s := buildServer(t, root)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			if code := do(s, "/").Code; code != 200 {
+				t.Errorf("home status = %d during concurrent reloads, want 200", code)
+				return
+			}
+			if code := do(s, "/alpha/c/1").Code; code != 200 {
+				t.Errorf("page status = %d during concurrent reloads, want 200", code)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 10; i++ {
+		writeProject(t, root, fmt.Sprintf("s%d", i), map[string]string{"c/1.txt": "x\n"})
+		if n, err := s.reload(); err != nil {
+			t.Fatalf("reload() = %v", err)
+		} else if n != i+2 {
+			t.Fatalf("reload() = %d projects, want %d", n, i+2)
+		}
+	}
+	<-done
 }
 
 func TestTruncateDescription(t *testing.T) {

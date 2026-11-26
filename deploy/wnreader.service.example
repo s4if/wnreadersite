@@ -54,6 +54,11 @@ ExecStart=/opt/wnreadersite/wnreader -addr 127.0.0.1 -port 5500 -title "My Libra
 #   ExecStart=./wnreader
 # An absolute path is recommended, but both work with WorkingDirectory set.
 
+# Optional: `systemctl reload wnreader` re-scans the library without a
+# restart (same effect as the loopback POST /reload endpoint, but needs
+# root or a sudo/polkit rule to invoke).
+ExecReload=/bin/kill -HUP $MAINPID
+
 # Restart behaviour
 Restart=on-failure
 RestartSec=5

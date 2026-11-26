@@ -11,8 +11,8 @@ served as a project.
 Create a subfolder in the library root containing the translated pages
 (default `en/`) and a `wnreader.toml` file. A folder is only served while
 that file exists, so renaming it away (e.g. to `wnreader.toml.bak`) takes
-the series offline. Restart the app to pick up changes; see
-`wnreader_example.toml` for the available settings.
+the series offline. See *Reloading content* below for picking up changes
+without a restart; see `wnreader_example.toml` for the available settings.
 
 ### Command line options
 
@@ -25,6 +25,38 @@ the series offline. Restart the app to pick up changes; see
                     project's wnreader.toml, else .txt)
     -rootdir /path  library root directory containing the project folders
                     (default: the folder containing the executable)
+    -admin 127.0.0.1:5501
+                    loopback address of the reload endpoint ("" disables it)
+
+## Reloading content
+
+The library is scanned at startup. To pick up pulled content without a
+restart, either trigger re-scans it:
+
+    curl -X POST http://127.0.0.1:5501/reload
+    systemctl reload wnreader
+
+The curl hits the reload endpoint: a separate listener bound to loopback
+only (`-admin 127.0.0.1:5501`; pass `-admin ""` to disable). It is never
+reachable through a reverse proxy, so a local git hook can call it without
+sudo even when the server runs as root behind nginx. The `systemctl` path
+sends SIGHUP to the process and needs sufficient privileges (root, or a
+sudo/polkit rule for your user).
+
+A failed re-scan keeps serving the previous content. Renaming a series'
+`wnreader.toml` away and re-scanning takes it offline, same as before.
+
+### Automatic reload on git pull
+
+Install the example hook in the server's clone only — git hooks are
+per-clone and never synced, so your laptop and PC are unaffected:
+
+    cp deploy/post-merge.example /path/to/library/.git/hooks/post-merge
+    chmod +x /path/to/library/.git/hooks/post-merge
+
+Every successful plain `git pull` then pokes the reload endpoint, making
+new series and chapters visible within a second. (`git pull --rebase`
+runs a rebase, not a merge, and does not invoke this hook.)
 
 ## Building for maximum compatibility
 

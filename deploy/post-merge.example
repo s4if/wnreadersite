@@ -1,0 +1,24 @@
+#!/bin/sh
+# wnreadersite git hook — EXAMPLE
+#
+# Makes the running server pick up pulled content without a restart: every
+# successful `git pull` in this clone pokes the loopback-only reload
+# endpoint. curl needs no special privileges, so this works even when the
+# service runs as root and the pull runs as a normal user.
+#
+# Install it in the SERVER clone only — git hooks live per clone and are
+# never synced by git, so your laptop/PC clones are unaffected:
+#
+#   cp deploy/post-merge.example /path/to/library/.git/hooks/post-merge
+#   chmod +x /path/to/library/.git/hooks/post-merge
+#
+# Fires after plain `git pull`, covering merges and fast-forwards alike.
+# NOTE: `git pull --rebase` runs a rebase, not a merge, and does NOT invoke
+# this hook — keep the server on plain pulls, or wire the curl line below
+# into a reference-transaction hook instead.
+#
+# Requires the server to run with -admin (default 127.0.0.1:5501) so the
+# endpoint exists. Adjust the URL if you changed -admin.
+
+curl -fsS -X POST http://127.0.0.1:5501/reload \
+	|| echo "wnreadersite reload failed: is the server running with -admin?" >&2
